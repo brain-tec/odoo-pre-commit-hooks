@@ -280,7 +280,7 @@ options:
 
  * csv-duplicate-record-id
 
-    - https://github.com/OCA/odoo-pre-commit-hooks/blob/v0.0.33/test_repo/broken_module/ir.model.access.csv#L5 Duplicate CSV record `data/access_account_account_type`
+    - https://github.com/OCA/odoo-pre-commit-hooks/blob/v0.0.33/test_repo/broken_module/ir.model.access.csv#L5 Duplicate CSV record `access_account_account_type`
 
  * csv-syntax-error
 
@@ -348,8 +348,8 @@ options:
 
  * xml-duplicate-record-id
 
-    - https://github.com/OCA/odoo-pre-commit-hooks/blob/v0.0.33/test_repo/broken_module/model_view.xml#L5 Duplicate xml record id `data/view_model_form_noupdate_0`
-    - https://github.com/OCA/odoo-pre-commit-hooks/blob/v0.0.33/test_repo/broken_module/model_view2.xml#L5 Duplicate xml record id `data/view_model_form2_noupdate_0`
+    - https://github.com/OCA/odoo-pre-commit-hooks/blob/v0.0.33/test_repo/broken_module/model_view.xml#L5 Duplicate xml record id `view_model_form`
+    - https://github.com/OCA/odoo-pre-commit-hooks/blob/v0.0.33/test_repo/broken_module/model_view2.xml#L5 Duplicate xml record id `view_model_form2`
 
  * xml-duplicate-template-id
 
