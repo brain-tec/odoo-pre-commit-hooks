@@ -46,7 +46,7 @@ def generage_long_description():
 
 setup(
     name="oca-odoo-pre-commit-hooks",
-    version="0.0.35",
+    version="0.1.0",
     license="LGPL-3.0-or-later",
     description="odoo-pre-commit-hooks to use in pre-commit-config.yml files",
     long_description=generage_long_description(),
@@ -70,12 +70,11 @@ setup(
         "Operating System :: Microsoft :: Windows",
         "Operating System :: MacOS",
         "Programming Language :: Python :: 3",
-        "Programming Language :: Python :: 3.7",
-        "Programming Language :: Python :: 3.8",
         "Programming Language :: Python :: 3.9",
         "Programming Language :: Python :: 3.10",
         "Programming Language :: Python :: 3.11",
         "Programming Language :: Python :: 3.12",
+        "Programming Language :: Python :: 3.13",
         "Topic :: Utilities",
     ],
     project_urls={
@@ -87,7 +86,7 @@ setup(
         "Odoo Community Association",
         "pre-commit-hook",
     ],
-    python_requires=">=3.7",
+    python_requires=">=3.9",
     install_requires=generate_dependencies(),
     extras_require={},
     entry_points={
