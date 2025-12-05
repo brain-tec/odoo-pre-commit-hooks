@@ -33,7 +33,8 @@ class ChecksOdooModuleXML(BaseChecker):
     xpath_oe_structure_woid = etree.XPath(
         "//*[hasclass('oe_structure') and (not(@id) or not(contains(@id, 'oe_structure')))]"
     )
-    xpath_record = etree.XPath("/odoo//record | /openerp//record")
+    # Add menuitem as record since that they have the same checks for now, maybe in the future separate them
+    xpath_record = etree.XPath("/odoo//record | /openerp//record | /odoo//menuitem | /openerp//menuitem")
     xpath_view_arch_xml = etree.XPath("field[@name='arch' and @type='xml'][1]")
     xpath_ir_fields = etree.XPath("field[@name='name' or @name='user_id']")
     xpath_template = etree.XPath("/odoo//template|/openerp//template")
@@ -270,7 +271,7 @@ class ChecksOdooModuleXML(BaseChecker):
                 line=1,
             )
 
-    @utils.only_required_for_checks("xml-redundant-module-name")
+    @utils.only_required_for_checks("xml-redundant-module-name", "xml-id-position-first")
     def visit_xml_record(self, manifest_data, record):
         """* Check xml-redundant-module-name
 
@@ -279,6 +280,14 @@ class ChecksOdooModuleXML(BaseChecker):
 
         The "module_a." is redundant it could be replaced to only
         `<record id="xmlid_name1" ...`
+
+        * Check xml-id-position-first
+
+        If the record id is not in the first position
+        `<record ... id="xmlid_name1"`
+
+        It should be the first
+        `<record id="xmlid_name1" ...`
         """
         # redundant_module_name
         record_id = record.get("id")
@@ -286,15 +295,55 @@ class ChecksOdooModuleXML(BaseChecker):
             return
 
         xmlid_module, xmlid_name = record_id.split(".") if "." in record_id else ["", record_id]
-        if xmlid_module == self.module_name:
-            # TODO: Add autofix option
+        if xmlid_module == self.module_name and self.is_message_enabled(
+            "xml-redundant-module-name", manifest_data["disabled_checks"]
+        ):
             self.register_error(
                 code="xml-redundant-module-name",
-                message=f'Redundant module name `<record id="{record_id}" />`',
-                info=f'Use `<record id="{xmlid_name}" />` instead',
+                message=f'Redundant module name `<{record.tag} id="{record_id}"`',
+                info=f'Use `<{record.tag} id="{xmlid_name}"` instead',
                 filepath=manifest_data["filename_short"],
                 line=record.sourceline,
             )
+            if self.autofix:
+                # Modify the record attrib to propagate the change to other checks
+                record.attrib["id"] = xmlid_name
+                content = b""
+                with open(manifest_data["filename"], "rb") as f_xml:
+                    for no_line, line in enumerate(f_xml, start=1):
+                        if no_line == record.sourceline:
+                            line = line.replace(f' id="{record_id}" '.encode(), f' id="{xmlid_name}" '.encode())
+                        content += line
+                utils.perform_fix(manifest_data["filename"], content)
+
+        first_attr = record.keys()[0]
+        if first_attr != "id" and self.is_message_enabled("xml-id-position-first", manifest_data["disabled_checks"]):
+            self.register_error(
+                code="xml-id-position-first",
+                message=f'The "id" attribute must be first `<{record.tag} id="{record_id}" {first_attr}=...`',
+                info=f'Use `<{record.tag} id="{record_id}"  {first_attr}=...` instead',
+                filepath=manifest_data["filename_short"],
+                line=record.sourceline,
+            )
+            if self.autofix:
+                # Not compatible with multi-line because it is complex to parse and fix and could raise new errors
+                # only compatible if the record tag tostring is the same than the source ~80% of the cases
+                attrs = dict(record.attrib)
+                old_tag = f"{record.tag} " + " ".join(f'{k}="{v}"' for k, v in attrs.items())
+                new_attrs = {"id": attrs.pop("id"), **attrs}
+                new_tag = f"{record.tag} " + " ".join(f'{k}="{v}"' for k, v in new_attrs.items())
+
+                # Update the record attrib to propagate the change to other checks
+                record.attrib.clear()
+                record.attrib.update(new_attrs)
+
+                content = b""
+                with open(manifest_data["filename"], "rb") as f_xml:
+                    for no_line, line in enumerate(f_xml, start=1):
+                        if no_line == record.sourceline:
+                            line = line.replace(old_tag.encode("UTF-8"), new_tag.encode("UTF-8"))
+                        content += line
+                utils.perform_fix(manifest_data["filename"], content)
 
     @utils.only_required_for_checks("xml-view-dangerous-replace-low-priority", "xml-deprecated-tree-attribute")
     def visit_xml_record_view(self, manifest_data, record):
@@ -436,7 +485,6 @@ class ChecksOdooModuleXML(BaseChecker):
             if not self.is_message_enabled("xml-deprecated-data-node", manifest_data["disabled_checks"]):
                 continue
             for data_node in self.xpath_deprecated_data(manifest_data["node"]):
-                # TODO: Add autofix option
                 self.register_error(
                     code="xml-deprecated-data-node",
                     message="Deprecated `<data>` node",
@@ -453,7 +501,6 @@ class ChecksOdooModuleXML(BaseChecker):
             if not self.is_message_enabled("xml-deprecated-openerp-node", manifest_data["disabled_checks"]):
                 continue
             for openerp_node in self.xpath_openerp(manifest_data["node"]):
-                # TODO: Add autofix option
                 self.register_error(
                     code="xml-deprecated-openerp-node",
                     message="Deprecated `<openerp>` xml node",

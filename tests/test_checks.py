@@ -32,7 +32,7 @@ EXPECTED_ERRORS = {
     "xml-duplicate-fields": 3,
     "xml-duplicate-record-id": 2,
     "xml-not-valid-char-link": 2,
-    "xml-redundant-module-name": 1,
+    "xml-redundant-module-name": 2,
     "xml-syntax-error": 2,
     "xml-view-dangerous-replace-low-priority": 7,
     "xml-xpath-translatable-item": 4,
@@ -41,6 +41,7 @@ EXPECTED_ERRORS = {
     "xml-duplicate-template-id": 9,
     "xml-header-missing": 1,
     "xml-header-wrong": 19,
+    "xml-id-position-first": 3,
     "xml-deprecated-oe-chatter": 1,
 }
 
@@ -124,26 +125,67 @@ class TestChecks(common.ChecksCommon):
         fname_wo_header = os.path.join(self.test_repo_path, "broken_module", "xml_wo_header.xml")
         with open(fname_wo_header, "rb") as f_wo_header:
             content = f_wo_header.read()
-            self.assertFalse(content.strip().startswith(b"<?xml version="), "The XML header was preivously added")
+        self.assertFalse(content.strip().startswith(b"<?xml version="), "The XML header was previously added")
 
         fname_wrong_header = os.path.join(self.test_repo_path, "broken_module", "model_view.xml")
         with open(fname_wrong_header, "rb") as f_wrong_header:
             content = f_wrong_header.read()
-            self.assertFalse(
-                content.strip().startswith(oca_pre_commit_hooks.checks_odoo_module_xml.XML_HEADER_EXPECTED),
-                "The XML wrong header was preivously fixed",
-            )
+        self.assertFalse(
+            content.strip().startswith(oca_pre_commit_hooks.checks_odoo_module_xml.XML_HEADER_EXPECTED),
+            "The XML wrong header was previously fixed",
+        )
+
+        fname_wrong_xmlid_order = os.path.join(self.test_repo_path, "broken_module", "model_view_odoo2.xml")
+        with open(fname_wrong_xmlid_order, "rb") as f_wrong_xmlid_order:
+            content = f_wrong_xmlid_order.read()
+        self.assertIn(
+            b'<record model="ir.ui.view" id="view_ir_config_search">',
+            content,
+            "The XML wrong xmlid order was previously fixed",
+        )
+        self.assertIn(
+            b'<menuitem name="Root" id="broken_module.menu_root" />',
+            content,
+            "The XML wrong xmlid order and redundant module name was previously fixed",
+        )
+
+        fname_redundant_module_name = os.path.join(self.test_repo_path, "broken_module", "model_view2.xml")
+        with open(fname_redundant_module_name, "rb") as f_redundant_module_name:
+            content = f_redundant_module_name.read()
+        self.assertIn(
+            b'<record id="broken_module.view_model_form2" model="ir.ui.view">',
+            content,
+            "The XML wrong redundant module name was previously fixed",
+        )
 
         self.checks_run(self.file_paths, autofix=True, no_exit=True, no_verbose=False)
 
         # After autofix
         with open(fname_wo_header, "rb") as f_wo_header:
             content = f_wo_header.read()
-            self.assertTrue(content.strip().startswith(b"<?xml version="), "The XML header was not added")
+        self.assertTrue(content.strip().startswith(b"<?xml version="), "The XML header was not added")
 
         with open(fname_wrong_header, "rb") as f_wrong_header:
             content = f_wrong_header.read()
-            self.assertTrue(
-                content.strip().startswith(oca_pre_commit_hooks.checks_odoo_module_xml.XML_HEADER_EXPECTED),
-                "The XML wrong header was not fixed fixed",
-            )
+        self.assertTrue(
+            content.strip().startswith(oca_pre_commit_hooks.checks_odoo_module_xml.XML_HEADER_EXPECTED),
+            "The XML wrong header was not fixed",
+        )
+        with open(fname_wrong_xmlid_order, "rb") as f_wrong_xmlid_order:
+            content = f_wrong_xmlid_order.read()
+        self.assertIn(
+            b'<record id="view_ir_config_search" model="ir.ui.view">', content, "The XML wrong xmlid was not fixed"
+        )
+        self.assertIn(
+            b'<menuitem id="menu_root" name="Root" />',
+            content,
+            "The XML wrong xmlid order and redundant module name was not fixed",
+        )
+
+        with open(fname_redundant_module_name, "rb") as f_redundant_module_name:
+            content = f_redundant_module_name.read()
+        self.assertIn(
+            b'<record id="view_model_form2" model="ir.ui.view">',
+            content,
+            "The XML wrong redundant module name was not fixed",
+        )
