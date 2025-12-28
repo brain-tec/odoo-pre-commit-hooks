@@ -25,6 +25,7 @@ EXPECTED_ERRORS = {
     "manifest-syntax-error": 2,
     "prefer-env-translation": 41,
     "prefer-readme-rst": 1,
+    "unused-logger": 1,
     "xml-create-user-wo-reset-password": 1,
     "xml-dangerous-qweb-replace-low-priority": 9,
     "xml-deprecated-data-node": 8,
@@ -36,6 +37,7 @@ EXPECTED_ERRORS = {
     "xml-not-valid-char-link": 2,
     "xml-redundant-module-name": 3,
     "xml-syntax-error": 2,
+    "xml-template-prettier-incompatible": 3,
     "xml-view-dangerous-replace-low-priority": 7,
     "xml-xpath-translatable-item": 4,
     "xml-oe-structure-missing-id": 6,
@@ -43,7 +45,7 @@ EXPECTED_ERRORS = {
     "xml-duplicate-template-id": 9,
     "xml-header-missing": 2,
     "xml-header-wrong": 18,
-    "xml-id-position-first": 5,
+    "xml-id-position-first": 9,
     "xml-deprecated-oe-chatter": 1,
     "xml-field-bool-without-eval": 2,
     "xml-field-numeric-without-eval": 7,
@@ -204,6 +206,28 @@ class TestChecks(common.ChecksCommon):
             "The README.rst file should not exist before autofix",
         )
 
+        template_xml = os.path.join(self.test_repo_path, "test_module", "website_templates.xml")
+        with open(template_xml, "rb") as f_template_xml:
+            content = f_template_xml.read()
+        self.assertIn(
+            b'''<template
+        name="test_module_widget"
+        inherit_id="web.assets_backend"
+        id="assets_backend"''',
+            content,
+            "The XML wrong xmlid order was previously fixed",
+        )
+
+        self.assertIn(
+            b"""<template
+        name='test_module_widget_2'
+        inherit_id="web.assets_backend"
+        id='assets_backend_2'
+    />""",
+            content,
+            "The XML wrong xmlid order was previously fixed",
+        )
+
         self.checks_run(self.file_paths, autofix=True, no_exit=True, no_verbose=False)
 
         # After autofix
@@ -275,4 +299,24 @@ class TestChecks(common.ChecksCommon):
         self.assertTrue(
             (Path(self.test_repo_path) / "broken_module" / "README.rst").is_file(),
             "The README.rst file should exist after autofix",
+        )
+
+        with open(template_xml, "rb") as f_template_xml:
+            content = f_template_xml.read()
+        self.assertIn(
+            b'''<template
+        id="assets_backend"
+        name="test_module_widget"
+        inherit_id="web.assets_backend"''',
+            content,
+            "The XML xmlid order was not fixed",
+        )
+        self.assertIn(
+            b"""<template
+        id='assets_backend_2'
+        name='test_module_widget_2'
+        inherit_id="web.assets_backend"
+    />""",
+            content,
+            "The XML xmlid order was not fixed",
         )

@@ -112,7 +112,7 @@ class ChecksOdooModuleXML(BaseChecker):
                 manifest_data.update(
                     {
                         "file_error": None,
-                        "disabled_checks": self._get_disabled_checks(node),
+                        "disabled_checks": self._get_disabled_checks(node, manifest_data),
                     }
                 )
             except (FileNotFoundError, etree.XMLSyntaxError, UnicodeDecodeError) as xml_err:
@@ -124,7 +124,7 @@ class ChecksOdooModuleXML(BaseChecker):
                     }
                 )
 
-    def _get_disabled_checks(self, node):
+    def _get_disabled_checks(self, node, manifest_data):
         """Get the check-name disable comments from etree XML node
 
         e.g. <!-- oca-hooks:disable=check-name -->
@@ -134,7 +134,9 @@ class ChecksOdooModuleXML(BaseChecker):
             checks_disabled, use_deprecated = utils.checks_disabled(comment_node.text)
             all_checks_disabled |= set(checks_disabled)
             if use_deprecated:
-                print(f"{node.docinfo.URL}:{comment_node.sourceline} WARNING. DEPRECATED. Use oca-disable instead.")
+                print(
+                    f"{manifest_data['filename_short']}:{comment_node.sourceline} WARNING. DEPRECATED. Use oca-disable instead."
+                )
         return all_checks_disabled
 
     def getattr_checks(self, manifest_data, prefix):
@@ -451,64 +453,67 @@ class ChecksOdooModuleXML(BaseChecker):
                 line=record.sourceline,
             )
             if self.autofix:
-                attrs = dict(record.attrib)
-                bef, during, aft = self._read_node(manifest_data["filename"], record)
+                self.autofix_id_position_first(record, first_attr, manifest_data)
 
-                # Build regex pattern to match the tag with all its known attributes
-                # sourceline is the last line of the last attribute, so we need to search backwards
-                tag_name = re.escape(record.tag)
+    def autofix_id_position_first(self, node, first_attr, manifest_data):
+        attrs = dict(node.attrib)
+        bef, during, aft = self._read_node(manifest_data["filename"], node)
 
-                # Create a pattern that matches all known attributes in any order
-                # Each attribute: attrname="attrvalue" with optional whitespace
-                attr_patterns = []
-                # Use the first attribute spaces since that id will be the new first attribute
-                keys = [f"spaces_before_{first_attr}", "id"]
-                for attr_name, attr_value in attrs.items():
-                    escaped_name = re.escape(attr_name)
-                    escaped_value = re.escape(attr_value)
-                    # Match attribute with flexible whitespace and quotes
-                    attr_patterns.append(
-                        rf'(?P<spaces_before_{attr_name}>\s*)(?P<{attr_name}>{escaped_name}\s*=\s*(?P<quote_{attr_name}>["\'])({escaped_value})(?P=quote_{attr_name}))'
-                    )
-                    if attr_name == "id":
-                        # skip the first key "id" because is already added
-                        continue
-                    if attr_name == first_attr:
-                        # Use the same spaces_before_id for the first attribute
-                        # <record name="test_name"
-                        #     id="test_id"
-                        # />
-                        # <record id="test_id"
-                        #     name="test_name"
-                        # />
-                        keys.extend(["spaces_before_id", attr_name])
-                        continue
-                    keys.extend([f"spaces_before_{attr_name}", attr_name])
-                # Pattern for the complete opening tag
-                # <tag_name whitespace attr1 whitespace attr2 ... whitespace>
-                # Using DOTALL to match across lines
-                attrs_regex = r"".join(attr_patterns)
-                pattern = (
-                    rf"(?P<open_{record.tag}><{tag_name})"  # Opening tag with space
-                    rf"{attrs_regex}"  # All attributes with whitespace between them
-                    rf"(?P<close_{record.tag}>\s*(/?)>)"  # Optional self-closing and closing >
-                )
+        # Build regex pattern to match the tag with all its known attributes
+        # sourceline is the last line of the last attribute, so we need to search backwards
+        tag_name = re.escape(node.tag)
 
-                # Search with multiline and dotall flags
-                match = re.search(pattern, during.decode(), re.DOTALL | re.MULTILINE)
-                if match:
-                    keys = [f"open_{record.tag}"] + keys + [f"close_{record.tag}"]
-                    match_dict = match.groupdict()
-                    recreate = "".join(match_dict[k] for k in keys)
-                    original = match.group()
-                    during2 = during.replace(original.encode(), recreate.encode(), 1)
-                    if during2 != during:
-                        # Modify the record attrib to propagate the change to other checks
-                        id_value = attrs.pop("id")
-                        record.attrib.clear()
-                        new_attrs = {"id": id_value, **attrs}
-                        record.attrib.update(new_attrs)
-                        utils.perform_fix(manifest_data["filename"], bef + during2 + aft)
+        # Create a pattern that matches all known attributes in any order
+        # Each attribute: attrname="attrvalue" with optional whitespace
+        attr_patterns = []
+        # Use the first attribute spaces since that id will be the new first attribute
+        keys = [f"spaces_before_{first_attr}", "id"]
+        for attr_name, attr_value in attrs.items():
+            escaped_name = re.escape(attr_name)
+            escaped_value = re.escape(attr_value)
+            # Match attribute with flexible whitespace and quotes
+            attr_patterns.append(
+                rf'(?P<spaces_before_{attr_name}>\s*)(?P<{attr_name}>{escaped_name}\s*=\s*(?P<quote_{attr_name}>["\'])({escaped_value})(?P=quote_{attr_name}))'
+            )
+            if attr_name == "id":
+                # skip the first key "id" because is already added
+                continue
+            if attr_name == first_attr:
+                # Use the same spaces_before_id for the first attribute
+                # <record name="test_name"
+                #     id="test_id"
+                # />
+                # <record id="test_id"
+                #     name="test_name"
+                # />
+                keys.extend(["spaces_before_id", attr_name])
+                continue
+            keys.extend([f"spaces_before_{attr_name}", attr_name])
+        # Pattern for the complete opening tag
+        # <tag_name whitespace attr1 whitespace attr2 ... whitespace>
+        # Using DOTALL to match across lines
+        attrs_regex = r"".join(attr_patterns)
+        pattern = (
+            rf"(?P<open_{node.tag}><{tag_name})"  # Opening tag with space
+            rf"{attrs_regex}"  # All attributes with whitespace between them
+            rf"(?P<close_{node.tag}>\s*(/?)>)"  # Optional self-closing and closing >
+        )
+
+        # Search with multiline and dotall flags
+        match = re.search(pattern, during.decode(), re.DOTALL | re.MULTILINE)
+        if match:
+            keys = [f"open_{node.tag}"] + keys + [f"close_{node.tag}"]
+            match_dict = match.groupdict()
+            recreate = "".join(match_dict[k] for k in keys)
+            original = match.group()
+            during2 = during.replace(original.encode(), recreate.encode(), 1)
+            if during2 != during:
+                # Modify the record attrib to propagate the change to other checks
+                id_value = attrs.pop("id")
+                node.attrib.clear()
+                new_attrs = {"id": id_value, **attrs}
+                node.attrib.update(new_attrs)
+                utils.perform_fix(manifest_data["filename"], bef + during2 + aft)
 
     @utils.only_required_for_checks("xml-view-dangerous-replace-low-priority", "xml-deprecated-tree-attribute")
     def visit_xml_record_view(self, manifest_data, record):
@@ -610,13 +615,47 @@ class ChecksOdooModuleXML(BaseChecker):
 
         return f"{manifest_data['data_section']}/{template_id}_noupdate_{template.getparent().get('noupdate', '0')}"
 
-    @utils.only_required_for_checks("xml-dangerous-qweb-replace-low-priority", "xml-duplicate-template-id")
+    def verify_template_prettier_incompatible(self, template, manifest_data):
+        """There are text tags incompatible with prettier xml autofix
+        More info https://github.com/OCA/odoo-pre-commit-hooks/issues/149"""
+        target_attrs = {"t-out", "t-esc", "t-raw"}
+        for node_textarea in template.xpath(".//textarea"):
+            if len(node_textarea_child := node_textarea.getchildren()) != 1:
+                continue
+            node_textarea_child = node_textarea_child[0]
+            has_text = node_textarea.text and node_textarea.text.strip()
+            has_tail = node_textarea_child.tail and node_textarea_child.tail.strip()
+            found_attr = set(node_textarea_child.attrib) & target_attrs
+            if node_textarea_child.tag != "t" or has_text or has_tail or not found_attr:
+                continue
+            found_attr = found_attr.pop()
+            self.register_error(
+                code="xml-template-prettier-incompatible",
+                message=(
+                    f"Node `<{node_textarea.tag} ...><{node_textarea_child.tag} {found_attr}=...` "
+                    "incompatible for Prettier XML auto-fix. To prevent unexpected text insertion "
+                    f"prefer `<{node_textarea.tag} {found_attr}=...`"
+                ),
+                filepath=manifest_data["filename_short"],
+                line=node_textarea_child.sourceline,
+            )
+            # TODO: Autofix using the same node
+
+    @utils.only_required_for_checks(
+        "xml-dangerous-qweb-replace-low-priority",
+        "xml-duplicate-template-id",
+        "xml-id-position-first",
+        "xml-template-prettier-incompatible",
+    )
     def check_xml_templates(self):
         """* Check xml-dangerous-qweb-replace-low-priority
         Dangerous qweb view defined with low priority
 
         * Check xml-duplicate-template-id
         Triggered when two templates share the same ID
+
+        * Check xml-template-prettier-incompatible
+        Indentify nodes incompatible with Prettier XML auto-fix generating possible unexpected text insertion
         """
         template_ids: Dict[str, List[FileElementPair]] = defaultdict(list)
         for manifest_data in self.manifest_datas:
@@ -630,6 +669,23 @@ class ChecksOdooModuleXML(BaseChecker):
                     if not template_id:  # pragma: no cover
                         continue
                     template_ids[template_id].append(FileElementPair(manifest_data["filename_short"], template))
+                if self.is_message_enabled("xml-template-prettier-incompatible", manifest_data["disabled_checks"]):
+                    self.verify_template_prettier_incompatible(template, manifest_data)
+
+                if (
+                    self.is_message_enabled("xml-id-position-first", manifest_data["disabled_checks"])
+                    and (first_attr := template.keys()[0]) != "id"
+                    and (template_id_short := template.get("id"))
+                ):
+                    self.register_error(
+                        code="xml-id-position-first",
+                        message=f'The "id" attribute must be first `<{template.tag} id="{template_id_short}" {first_attr}=...`',
+                        info=f'Use `<{template.tag} id="{template_id_short}"  {first_attr}=...` instead',
+                        filepath=manifest_data["filename_short"],
+                        line=template.sourceline,
+                    )
+                    if self.autofix:
+                        self.autofix_id_position_first(template, first_attr, manifest_data)
 
         for xmlid_key, records in template_ids.items():
             if len(records) < 2:
