@@ -26,6 +26,7 @@ EXPECTED_ERRORS = {
     "prefer-env-translation": 41,
     "prefer-readme-rst": 1,
     "unused-logger": 1,
+    "use-header-comments": 1,
     "xml-create-user-wo-reset-password": 1,
     "xml-dangerous-qweb-replace-low-priority": 9,
     "xml-deprecated-data-node": 8,
@@ -98,14 +99,27 @@ class TestChecks(common.ChecksCommon):
 
         version = oca_pre_commit_hooks.__version__
         check_example_content = ""
+        ansi_re = re.compile(
+            r"""
+            \x1B  # ESC
+            (?:   # 7-bit C1 Fe (except CSI)
+                [@-Z\\-_]
+            |     # or [ for CSI, followed by control sequences
+                \[
+                [0-?]*  # Parameter bytes
+                [ -/]*  # Intermediate bytes
+                [@-~]   # Final byte
+            )
+            """,
+            re.VERBOSE,
+        )
+        ext2url = re.compile(r"(\.\w+):(\d+):\d*:?", re.VERBOSE)
         for code in sorted(all_check_errors_by_code):
             check_example_content += f"\n\n * {code}\n"
             for check_error in sorted(all_check_errors_by_code[code])[:3]:
-                msg = f"{check_error.position.filepath}"
-                if check_error.position.line:
-                    msg += f"#L{check_error.position.line}"
-                if check_error.message:
-                    msg += f" {check_error.message}"
+                msg = ansi_re.sub("", str(check_error))
+                msg = msg.replace("\n", " ").replace(f" {code} ", " ")
+                msg = ext2url.sub(r"\1#L\2", msg, count=1)
                 check_example_content += (
                     f"\n    - https://github.com/OCA/odoo-pre-commit-hooks/blob/v{version}/test_repo/{msg}"
                 )
@@ -228,6 +242,25 @@ class TestChecks(common.ChecksCommon):
             "The XML wrong xmlid order was previously fixed",
         )
 
+        py_comment = os.path.join(self.test_repo_path, "eleven_module", "models.py")
+        with open(py_comment, "rb") as f:
+            content = f.read()
+
+        self.assertIn(
+            b"""
+# comment normal
+# pylint: comment
+# Copyright 2016 Vauxoo
+# Copyright 2015 Vauxoo
+# License AGPL-3.0 or later (http://www.gnu.org/licenses/agpl.html).
+# flake8: comment
+# comment normal
+
+""",
+            content,
+            "The py Copyright was previously fixed",
+        )
+
         self.checks_run(self.file_paths, autofix=True, no_exit=True, no_verbose=False)
 
         # After autofix
@@ -319,4 +352,16 @@ class TestChecks(common.ChecksCommon):
     />""",
             content,
             "The XML xmlid order was not fixed",
+        )
+
+        with open(py_comment, "rb") as f:
+            content = f.read()
+        self.assertIn(
+            b"""
+# pylint: comment
+# flake8: comment
+
+""",
+            content,
+            "The py Copyright was not fixed",
         )
