@@ -2,12 +2,13 @@ import os
 import re
 from collections import defaultdict, namedtuple
 from copy import deepcopy
+from pathlib import Path
 from typing import Dict, List
 
 from lxml import etree
 from packaging.version import Version
 
-from oca_pre_commit_hooks import utils
+from oca_pre_commit_hooks import node_xml, utils
 from oca_pre_commit_hooks.base_checker import BaseChecker
 
 DFLT_DEPRECATED_TREE_ATTRS = ["colors", "fonts", "string"]
@@ -15,6 +16,34 @@ DFTL_MIN_PRIORITY = 99
 XML_HEADER_EXPECTED = b'<?xml version="1.0" encoding="UTF-8" ?>'
 XML_HEADER_RE = re.compile(rb"^<\?xml[^>]*\?>", re.IGNORECASE | re.MULTILINE)
 NUMBER_RE = re.compile(r"^(?P<integer>[+-]?\d+)(?P<decimal>\.\d+)?$")
+XML_PYTHON_ATTRS_RE = re.compile(
+    r"^(t-.*|data-.*|decoration-.*|"
+    + "|".join(
+        map(
+            re.escape,
+            {
+                "add",
+                "attrs",
+                "class",
+                "colors",
+                "context",
+                "digits",
+                "domain",
+                "eval",
+                "filter_domain",
+                "options",
+                "placeholder",
+                "precision",
+                "remove",
+                "search",
+                "statusbar_colors",
+                "studio_groups",
+                "thumbnails",
+            },
+        )
+    )
+    + ")$"
+)
 
 
 # Same as Odoo: https://github.com/odoo/odoo/commit/9cefa76988ff94c3d590c6631b604755114d0297
@@ -167,32 +196,6 @@ class ChecksOdooModuleXML(BaseChecker):
             return False
         replaces = cls.xpath_view_replaces(arch)
         return bool(replaces)
-
-    @staticmethod
-    def _read_node(filename, node):
-        """Read the content of file spliting the content in 3 pieces:
-        - before the xml node
-        - the xml node
-        - after the xml node"""
-        content_before = b""
-        content_node = b""
-        content_after = b""
-        if (node_previous := node.getprevious()) is not None:
-            start_line = node_previous.sourceline + 1
-        elif (node_parent := node.getparent()) is not None:
-            start_line = node_parent.sourceline + 1
-        else:
-            start_line = 2  # it is the first element and it is the root
-        end_line = node.sourceline
-        with open(filename, "rb") as f_content:
-            for no_line, line in enumerate(f_content, start=1):
-                if no_line < start_line:
-                    content_before += line
-                elif start_line <= no_line <= end_line:
-                    content_node += line
-                else:
-                    content_after += line
-        return content_before, content_node, content_after
 
     @utils.only_required_for_checks("xml-header-missing", "xml-header-wrong")
     def check_xml_header(self):
@@ -373,17 +376,19 @@ class ChecksOdooModuleXML(BaseChecker):
                 field_copy = deepcopy(field)
                 field.attrib["eval"] = field_text
                 field.text = None
-                bef, during, aft = self._read_node(manifest_data["filename"], field)
+                node_content = node_xml.NodeContent(manifest_data["filename"], field)
 
                 field_regex = (
                     rf"<{re.escape(field.tag)}\s+name\s*=\s*(?P<q>[\"']){re.escape(field_name)}(?P=q).*".encode()
                 )
-                spaces_match = re.search(field_regex, during)
+                spaces_match = re.search(field_regex, node_content.content_node)
                 if spaces_match:
-                    during2 = during.replace(spaces_match.group(), etree.tostring(field).rstrip(b" \n"))
-                    if during2 != during:
-                        during2 = during2.replace(b"/>", b" />")
-                        utils.perform_fix(manifest_data["filename"], bef + during2 + aft)
+                    content_node2 = node_content.content_node.replace(
+                        spaces_match.group(), etree.tostring(field).rstrip(b" \n")
+                    )
+                    if content_node2 != node_content.content_node:
+                        node_content.content_node = content_node2.replace(b"/>", b" />")
+                        utils.perform_fix(manifest_data["filename"], bytes(node_content))
                     else:
                         field = field_copy  # revert changes if not fixed
 
@@ -441,13 +446,16 @@ class ChecksOdooModuleXML(BaseChecker):
                 line=record.sourceline,
             )
             if self.autofix:
-                bef, during, aft = self._read_node(manifest_data["filename"], record)
+                node_content = node_xml.NodeContent(manifest_data["filename"], record)
                 pattern = rb'\bid\s*=\s*(?P<q>["\'])(?P<id>' + re.escape(record_id.encode()) + rb")(?P=q)"
-                during2 = re.sub(pattern, rb"id=\g<q>" + xmlid_name.encode() + rb"\g<q>", during, count=1)
-                if during2 != during:
+                content_node2 = re.sub(
+                    pattern, rb"id=\g<q>" + xmlid_name.encode() + rb"\g<q>", node_content.content_node, count=1
+                )
+                if content_node2 != node_content.content_node:
                     # Modify the record attrib to propagate the change to other checks
                     record.attrib["id"] = xmlid_name
-                    utils.perform_fix(manifest_data["filename"], bef + during2 + aft)
+                    node_content.content_node = content_node2
+                    utils.perform_fix(manifest_data["filename"], bytes(node_content))
 
         first_attr = record.keys()[0]
         if first_attr != "id" and self.is_message_enabled("xml-id-position-first", manifest_data["disabled_checks"]):
@@ -463,8 +471,7 @@ class ChecksOdooModuleXML(BaseChecker):
 
     def autofix_id_position_first(self, node, first_attr, manifest_data):
         attrs = dict(node.attrib)
-        bef, during, aft = self._read_node(manifest_data["filename"], node)
-
+        node_content = node_xml.NodeContent(manifest_data["filename"], node)
         # Build regex pattern to match the tag with all its known attributes
         # sourceline is the last line of the last attribute, so we need to search backwards
         tag_name = re.escape(node.tag)
@@ -506,20 +513,21 @@ class ChecksOdooModuleXML(BaseChecker):
         )
 
         # Search with multiline and dotall flags
-        match = re.search(pattern, during.decode(), re.DOTALL | re.MULTILINE)
+        match = re.search(pattern, node_content.content_node.decode(), re.DOTALL | re.MULTILINE)
         if match:
             keys = [f"open_{node.tag}"] + keys + [f"close_{node.tag}"]
             match_dict = match.groupdict()
             recreate = "".join(match_dict[k] for k in keys)
             original = match.group()
-            during2 = during.replace(original.encode(), recreate.encode(), 1)
-            if during2 != during:
+            content_node2 = node_content.content_node.replace(original.encode(), recreate.encode(), 1)
+            if content_node2 != node_content.content_node:
                 # Modify the record attrib to propagate the change to other checks
                 id_value = attrs.pop("id")
                 node.attrib.clear()
                 new_attrs = {"id": id_value, **attrs}
                 node.attrib.update(new_attrs)
-                utils.perform_fix(manifest_data["filename"], bef + during2 + aft)
+                node_content.content_node = content_node2
+                utils.perform_fix(manifest_data["filename"], bytes(node_content))
 
     @utils.only_required_for_checks("xml-view-dangerous-replace-low-priority", "xml-deprecated-tree-attribute")
     def visit_xml_record_view(self, manifest_data, record):
@@ -647,6 +655,112 @@ class ChecksOdooModuleXML(BaseChecker):
             )
             # TODO: Autofix using the same node
 
+    def has_escaped_double_quotes(self, filename) -> bool:
+        """Check if filename contains escaped double quotes " -> &quot;
+
+        This is used to detect cases where prettier auto-fix converts
+        attributes like attr='""' into attr="&quot;&quot;", which is
+        technically valid XML but not human-readable.
+
+        :param filename: Path to the XML file to inspect
+        :return: True if escaped double quotes are found, False otherwise
+        """
+        filename_path = Path(filename)
+        if not filename_path.is_file():
+            return False
+        with filename_path.open("rb") as f_xml:
+            for line in f_xml:
+                if b"&quot;" in line:
+                    return True
+        return False
+
+    def is_compatible_single_quote(self, py_code):
+        try:
+            compile(py_code, "<string>", "exec")
+        except Exception:  # pylint:disable=broad-exception-caught
+            # Skip if it is already failed
+            return False
+        if py_code == (new_py_code := py_code.replace('"', "'")):
+            # Skip if no changes
+            return False
+        try:
+            compile(new_py_code, "<string>", "exec")
+        except Exception:  # pylint:disable=broad-exception-caught
+            # Skip if after changing it fails
+            return False
+        return new_py_code
+
+    @utils.only_required_for_checks("xml-double-quotes-py")
+    def check_xml_double_quotes_py(self):
+        """* Check xml-double-quotes-py
+        Detect XML attributes containing escaped double quotes " -> (&quot;)
+        for python expressions Python expressions (e.g. domain, context, eval, t-* or data-* attrs).
+        that originate from Prettier auto-fix and reduce human readability.
+
+        When Prettier rewrites values like attr='""' into attr="&quot;&quot;"
+        the result is valid XML but harder to read and maintain.
+
+        The check:
+        - Scans XML files that contain escaped double quotes (&quot;)
+        - Restricts analysis to attributes known to embed Python code
+        - Verifies that both the original and the proposed value are valid Python expressions
+        - Suggests replacing double quotes with single quotes when safe
+
+        This avoids false positives and prevents introducing syntax errors
+        while improving readability and Prettier compatibility."""
+        for manifest_data in self.manifest_datas:
+            if not self.is_message_enabled(
+                "xml-double-quotes-py", manifest_data["disabled_checks"]
+            ) or not self.has_escaped_double_quotes(manifest_data["filename"]):
+                continue
+            for elem in manifest_data["node"].iter():
+                if (
+                    (py_code := elem.text)
+                    and XML_PYTHON_ATTRS_RE.match(elem.get("name") or "")
+                    and (new_py_code := self.is_compatible_single_quote(py_code))
+                ):
+                    # Process text <field name="context">{}</field>
+                    node_content = node_xml.NodeContent(manifest_data["filename"], elem)
+                    if b"&quot;" not in node_content.content_node:
+                        continue
+                    self.register_error(
+                        code="xml-double-quotes-py",
+                        message='Escaped double quotes " for python code detected',
+                        info=f"Use single quote instead: `{new_py_code}`",
+                        filepath=manifest_data["filename_short"],
+                        line=elem.sourceline,
+                    )
+                    during2 = node_content.content_node.replace(b"&quot;", b"'")
+                    if self.autofix and during2 != node_content.content_node:
+                        # Modify the xml node to propagate the change to other checks
+                        elem.text = new_py_code
+                        node_content.content_node = during2
+                        utils.perform_fix(manifest_data["filename"], bytes(node_content))
+
+                for attr_name, attr_value in elem.attrib.items():
+                    # Process attributes <field domain="[]" context="{}" ../>
+                    if not XML_PYTHON_ATTRS_RE.match(attr_name):
+                        # Skip if it is not a known attribute to embed Python code
+                        continue
+                    if not (new_py_code := self.is_compatible_single_quote(attr_value)):
+                        continue
+                    node_content = node_xml.NodeContent(manifest_data["filename"], elem)
+                    if b"&quot;" not in node_content.content_node:
+                        continue
+                    self.register_error(
+                        code="xml-double-quotes-py",
+                        message='Escaped double quotes " for python code detected use',
+                        info=f"Use single quote instead: `{new_py_code}`",
+                        filepath=manifest_data["filename_short"],
+                        line=elem.sourceline,
+                    )
+                    during2 = node_content.content_node.replace(b"&quot;", b"'")
+                    if self.autofix and during2 != node_content.content_node:
+                        # Modify the xml node to propagate the change to other checks
+                        elem.attrib[attr_name] = new_py_code
+                        node_content.content_node = during2
+                        utils.perform_fix(manifest_data["filename"], bytes(node_content))
+
     @utils.only_required_for_checks(
         "xml-dangerous-qweb-replace-low-priority",
         "xml-duplicate-template-id",
@@ -773,17 +887,19 @@ class ChecksOdooModuleXML(BaseChecker):
                     line=node.sourceline,
                 )
                 if self.autofix and "t-out" not in node_attrs:
+                    # TODO: add autofix test
                     # if t-out already exists, skip autofix
                     attr_deprecated = next(iter(node_attrs_deprecated))
                     value_deprecated = node.attrib.get(attr_deprecated)
-                    bef, during, aft = self._read_node(manifest_data["filename"], node)
+                    node_content = node_xml.NodeContent(manifest_data["filename"], node)
                     pattern = rb"(?P<prefix>\b)" + re.escape(attr_deprecated).encode() + rb'(?P<suffix>\s*=\s*["\'])'
-                    during2 = re.sub(pattern, rb"\g<prefix>t-out\g<suffix>", during, count=1)
-                    if during2 != during:
+                    content_node2 = re.sub(pattern, rb"\g<prefix>t-out\g<suffix>", node_content.content_node, count=1)
+                    if content_node2 != node_content.content_node:
                         # Modify the record attrib to propagate the change to other checks
+                        node_content.content_node = content_node2
                         node.attrib.pop(attr_deprecated)
                         node.attrib["t-out"] = value_deprecated
-                        utils.perform_fix(manifest_data["filename"], bef + during2 + aft)
+                        utils.perform_fix(manifest_data["filename"], bytes(node_content))
 
     @utils.only_required_for_checks("xml-xpath-translatable-item")
     def check_xml_xpath(self):
