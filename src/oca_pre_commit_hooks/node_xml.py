@@ -1,3 +1,219 @@
+# Based on https://github.com/mitsuhiko/sloppy-xml-py
+from dataclasses import dataclass
+
+
+@dataclass(frozen=True)
+class XMLAttributeSpan:
+    name: str
+    value_start: int
+    value_end: int
+    name_start: int
+    name_end: int
+    attr_end: int
+
+
+@dataclass(frozen=True)
+class XMLStartTag:
+    tag: str
+    start: int
+    name_end: int
+    end: int
+    line: int
+    attrs: tuple[XMLAttributeSpan, ...]
+
+    def get_attr(self, attr_name):
+        for attr in self.attrs:
+            if attr.name == attr_name:
+                return attr
+        return None
+
+
+class XMLStartTagLocator:
+    """Locate opening tags and attribute spans without reformatting the file."""
+
+    def __init__(self, filename, tree):
+        self.filename = filename
+        with open(filename, "rb") as f_content:
+            self.content = f_content.read()
+        self.tags = self._scan_start_tags(self.content)
+        self._element_tags = {}
+        self._map_tree(tree)
+
+    @staticmethod
+    def _consume_until(content, start, needle):
+        end = content.find(needle, start)
+        if end == -1:
+            return len(content)
+        return end + len(needle)
+
+    @classmethod
+    def _scan_start_tags(cls, content):  # noqa: C901 pylint: disable=too-complex
+        tags = []
+        i = 0
+        line = 1
+        content_len = len(content)
+
+        while i < content_len:
+            byte = content[i : i + 1]
+            if byte == b"\n":
+                line += 1
+                i += 1
+                continue
+            if byte != b"<":
+                i += 1
+                continue
+
+            if content.startswith(b"<!--", i):
+                new_i = cls._consume_until(content, i + 4, b"-->")
+                line += content[i:new_i].count(b"\n")
+                i = new_i
+                continue
+            if content.startswith(b"<?", i):
+                new_i = cls._consume_until(content, i + 2, b"?>")
+                line += content[i:new_i].count(b"\n")
+                i = new_i
+                continue
+            if content.startswith(b"<![CDATA[", i):
+                new_i = cls._consume_until(content, i + 9, b"]]>")
+                line += content[i:new_i].count(b"\n")
+                i = new_i
+                continue
+            if content.startswith(b"</", i):
+                new_i = cls._consume_until(content, i + 2, b">")
+                line += content[i:new_i].count(b"\n")
+                i = new_i
+                continue
+            if content.startswith(b"<!", i):
+                new_i = cls._consume_until(content, i + 2, b">")
+                line += content[i:new_i].count(b"\n")
+                i = new_i
+                continue
+
+            tag_line = line
+            tag_start = i
+            i += 1
+            name_start = i
+            while i < content_len and content[i : i + 1] not in b" \t\r\n/>":
+                i += 1
+            tag_name = content[name_start:i].decode("utf-8", errors="replace")
+            tag_name_end = i
+            attrs = []
+
+            while i < content_len:
+                while i < content_len and content[i : i + 1] in b" \t\r\n":
+                    if content[i : i + 1] == b"\n":
+                        line += 1
+                    i += 1
+                if i >= content_len:
+                    break
+                if content.startswith(b"/>", i):
+                    i += 2
+                    break
+                if content[i : i + 1] == b">":
+                    i += 1
+                    break
+
+                attr_name_start = i
+                while i < content_len and content[i : i + 1] not in b" \t\r\n=/>":
+                    i += 1
+                attr_name_end = i
+                attr_name = content[attr_name_start:attr_name_end].decode("utf-8", errors="replace")
+
+                while i < content_len and content[i : i + 1] in b" \t\r\n":
+                    if content[i : i + 1] == b"\n":
+                        line += 1
+                    i += 1
+                if i < content_len and content[i : i + 1] == b"=":
+                    i += 1
+                while i < content_len and content[i : i + 1] in b" \t\r\n":
+                    if content[i : i + 1] == b"\n":
+                        line += 1
+                    i += 1
+
+                if i >= content_len or content[i : i + 1] not in (b'"', b"'"):
+                    continue
+                quote = content[i : i + 1]
+                i += 1
+                value_start = i
+                while i < content_len:
+                    if content[i : i + 1] == b"\n":
+                        line += 1
+                    if content[i : i + 1] == quote:
+                        value_end = i
+                        i += 1
+                        break
+                    i += 1
+
+                attrs.append(XMLAttributeSpan(attr_name, value_start, value_end, attr_name_start, attr_name_end, i))
+
+            tags.append(XMLStartTag(tag_name, tag_start, tag_name_end, i, tag_line, tuple(attrs)))
+
+        return tags
+
+    def _map_tree(self, tree):
+        tag_iter = iter(self.tags)
+        for element in tree.getroot().iter():
+            if not isinstance(getattr(element, "tag", None), str):
+                continue
+            tag_info = next(tag_iter, None)
+            if tag_info is None:
+                break
+            self._element_tags[tree.getpath(element)] = tag_info
+
+    def get_tag(self, element):
+        return self._element_tags.get(element.getroottree().getpath(element))
+
+    def get_attr(self, element, attr_name):
+        tag_info = self.get_tag(element)
+        if not tag_info:
+            return None
+        return tag_info.get_attr(attr_name)
+
+    def rewrite_start_tag(
+        self, content, element, attr_name_replacements=None, attr_value_replacements=None, first_attr=None
+    ):
+        tag_info = self.get_tag(element)
+        if not tag_info:
+            return content
+
+        attr_name_replacements = attr_name_replacements or {}
+        attr_value_replacements = attr_value_replacements or {}
+        attrs = list(tag_info.attrs)
+        if not attrs:
+            return content
+
+        open_part = content[tag_info.start : tag_info.name_end]
+        cursor = tag_info.name_end
+        spaces = []
+        attr_chunks = {}
+
+        for attr in attrs:
+            spaces.append(content[cursor : attr.name_start])
+            chunk = bytearray(content[attr.name_start : attr.attr_end])
+            if attr.name in attr_name_replacements:
+                new_name = attr_name_replacements[attr.name]
+                chunk[: len(attr.name)] = new_name
+            if attr.name in attr_value_replacements:
+                value_rel_start = attr.value_start - attr.name_start
+                value_rel_end = attr.value_end - attr.name_start
+                chunk[value_rel_start:value_rel_end] = attr_value_replacements[attr.name]
+            attr_chunks[attr.name] = bytes(chunk)
+            cursor = attr.attr_end
+
+        close_part = content[cursor : tag_info.end]
+        ordered_attrs = attrs
+        if first_attr:
+            target_attr = next((attr for attr in attrs if attr.name == first_attr), None)
+            if target_attr and attrs[0].name != first_attr:
+                ordered_attrs = [target_attr] + [attr for attr in attrs if attr.name != first_attr]
+
+        rebuilt = open_part
+        for idx, attr in enumerate(ordered_attrs):
+            rebuilt += spaces[idx] + attr_chunks[attr.name]
+        rebuilt += close_part
+        return content[: tag_info.start] + rebuilt + content[tag_info.end :]
+
+
 class NodeContent:
     """Represents the content and metadata of an XML node."""
 
